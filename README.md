@@ -16,10 +16,17 @@ Statement → Is it political? ── no → Non-political statement
 
 Jev answers from its own knowledge with no live fact-check, so very recent claims tend to land in *rumor*.
 
+## API keys
+
+You need two keys in `.env`:
+
+- **`SCRAPEBADGER_API_KEY`**: sign up at [scrapebadger.com](https://scrapebadger.com/auth/signup) and copy your API key from the dashboard ([auth docs](https://docs.scrapebadger.com/authentication.md)). It pays for fetching posts: 100 Trump posts from Truth Social cost about 10–20 credits, 100 tweets about 105.
+- **`OPENROUTER_API_KEY`**: sign up at [openrouter.ai](https://openrouter.ai), add a few dollars of credit, and create a key at [openrouter.ai/keys](https://openrouter.ai/keys). It pays for Jev, about $0.00002 per post.
+
 ## Run
 
 ```sh
-cp .env.example .env   # OPENROUTER_API_KEY, SCRAPEBADGER_API_KEY
+cp .env.example .env   # then paste both keys in
 npm install
 npm run dev            # API on :8787, app on Vite's port (proxies /api)
 npm start              # production build + API, served on :4173
