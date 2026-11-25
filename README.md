@@ -1,32 +1,37 @@
-# React + TypeScript + Vite
+# MissinformationGPT
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Pulls posts from Truth Social and X accounts and runs each one through a misinformation decision tree, animated live:
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```
+Statement → Is it political? ── no → Non-political statement
+              └ yes → Is it falsifiable? ── no → Political opinion
+                        └ yes → Externally verified or falsified? ── no → Political rumor
+                                  └ yes → Externally verified? ── no → Political misinformation
+                                                               └ yes → Political fact
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+- **Posts:** [ScrapeBadger](https://scrapebadger.com). X via its search API (~21 credits per 20 tweets). Truth Social via its web scraper hitting Truth Social's Mastodon API (2 credits per 20 posts). Reposts, replies and image/link-only posts are skipped.
+- **Classifier:** Jev (`typesafe/jev-1.13`) through OpenRouter's Decisions API. One call per post answers all four questions as probabilities; a node says yes at p ≥ 0.5.
+- **UI:** add accounts, set posts per account and a timeframe, then watch posts drop into the inbox and travel the tree. Click a leaf to filter the results.
+
+Jev answers from its own knowledge with no live fact-check, so very recent claims tend to land in *rumor*.
+
+## Run
+
+```sh
+cp .env.example .env   # OPENROUTER_API_KEY, SCRAPEBADGER_API_KEY
+npm install
+npm run dev            # API on :8787, app on Vite's port (proxies /api)
+npm start              # production build + API, served on :4173
+npm run check          # tree walk + HTML cleanup asserts
+```
+
+To share it: `cloudflared tunnel --url http://localhost:4173`. Anyone with the link can spend your API credits.
+
+## Layout
+
+- `server/index.ts` — `GET /api/run?src=truth:realDonaldTrump&src=x:handle&limit=50&since=YYYY-MM-DD&until=YYYY-MM-DD`, streamed as server-sent events (`post`, `progress`, `verdict`, `fail`, `end`).
+- `server/sources.ts` — Truth Social and X fetchers.
+- `server/jev.ts` — the four questions and the tree walk.
+- `src/Tree.tsx` — the figure as SVG, with posts animated along their path.
+- `src/App.tsx` — controls, inbox, results.
