@@ -1,4 +1,6 @@
-import { createServer } from 'node:http'
+import { readFile } from 'node:fs/promises'
+import { createServer, type ServerResponse } from 'node:http'
+import { extname, join } from 'node:path'
 import type { Post, Verdict } from '../src/types.ts'
 import { judge, leafOf } from './jev.ts'
 import { truth, x } from './sources.ts'
@@ -63,9 +65,21 @@ function parse(q: URLSearchParams): Run | undefined {
   return { sources, limit, since: since ? Date.parse(since) : undefined, until: until ? Date.parse(until) + DAY : undefined }
 }
 
+// The built app (`npm run build` → dist/). One page, so anything that isn't a file gets index.html.
+const DIST = join(import.meta.dirname, '../dist')
+const TYPES: Record<string, string> = { '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.html': 'text/html; charset=utf-8' }
+async function serveApp(pathname: string, res: ServerResponse) {
+  const file = join(DIST, pathname) // URL parsing already resolved any "..", so this stays inside dist/
+  const body = await readFile(file).catch(() => undefined)
+  if (body && TYPES[extname(file)]) return res.writeHead(200, { 'content-type': TYPES[extname(file)] }).end(body)
+  const index = await readFile(join(DIST, 'index.html')).catch(() => undefined)
+  if (!index) return res.writeHead(404, { 'content-type': 'text/plain' }).end('No build found: run `npm run build` first')
+  res.writeHead(200, { 'content-type': TYPES['.html'] }).end(index)
+}
+
 createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
-  if (url.pathname !== '/api/run') return res.writeHead(404).end()
+  if (url.pathname !== '/api/run') return serveApp(url.pathname, res)
   const params = parse(url.searchParams)
   if (!params) return res.writeHead(400, { 'content-type': 'text/plain' }).end('bad sources, limit or dates')
 
@@ -83,4 +97,4 @@ createServer(async (req, res) => {
     send('end', {})
     res.end()
   }
-}).listen(PORT, () => console.log(`api on :${PORT}`))
+}).listen(PORT, () => console.log(`MissinformationGPT on http://localhost:${PORT}`))
