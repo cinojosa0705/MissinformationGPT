@@ -18,14 +18,16 @@
 
 - **Any public account.** Truth Social and X, up to 10 accounts per run, 1–1000 posts each, any date range.
 - **A live decision tree.** Each post travels the tree as an animated token, with the model's answer at every question.
-- **Fast, cheap classification.** One call to Jev per post answers all four questions in about 0.4 s for about $0.00002, 16 posts at a time.
+- **Fast, cheap classification.** One call to Jev per post answers every question in about 0.4 s for about $0.00002, 16 posts at a time.
 - **Streaming.** Posts and verdicts reach the browser as they come in, while older pages are still loading.
-- **Results you can dig into.** Click a leaf to filter the table. Each row shows the four probabilities and links to the original post.
+- **Results you can dig into.** Click a leaf to filter the table. Each row shows Jev's probabilities and links to the original post.
+- **Every run saved as a CSV**, ready for a spreadsheet, with a download button when the run ends.
+- **An admin editor** for the tree: change the questions, Jev's prompts, the thresholds and the branches, try a statement against your draft, then save.
 - **Small.** One Node server with no framework, a React front end, and two runtime dependencies.
 
 ## How it works
 
-Every post is placed on this tree:
+Every post is placed on a decision tree. The default is this one, from Figure 1, and you can change it in the [admin](#admin):
 
 ```
 Statement → Is it political? ── no → Non-political statement
@@ -44,8 +46,9 @@ Statement → Is it political? ── no → Non-political statement
 | Political fact | verified | "Trump won the 2024 election!" |
 
 1. **Fetch.** The server pages back through each account with [ScrapeBadger](https://scrapebadger.com). Truth Social posts come through ScrapeBadger's web scraper on Truth Social's Mastodon-style API; X posts come from ScrapeBadger's search. Reposts, replies and posts with no text are skipped.
-2. **Classify.** Each post goes to **Jev** (`typesafe/jev-1.13`) through [OpenRouter](https://openrouter.ai)'s Decisions API. One call returns a probability for each of the four questions. A probability of 0.5 or more counts as "yes", and the walk stops at the first "no".
+2. **Classify.** Each post goes to **Jev** (`typesafe/jev-1.13`) through [OpenRouter](https://openrouter.ai)'s Decisions API. One call returns a probability for every question in the tree. A question says "yes" when its probability reaches the question's threshold (0.5 by default), and the walk follows the branches down to an outcome.
 3. **Stream.** Posts, progress and verdicts go to the browser as server-sent events, and the browser animates each verdict down the tree.
+4. **Save.** When the run ends, the server writes all its results to a CSV in `data/runs/`.
 
 ## Quick start
 
@@ -55,7 +58,7 @@ You need **Node.js 22.18 or newer** (24 recommended), which runs the TypeScript 
 git clone https://github.com/cinojosa0705/MissinformationGPT.git
 cd MissinformationGPT
 npm install
-cp .env.example .env   # then paste in your two API keys (see below)
+cp .env.example .env   # then paste in your API keys and an admin password (see below)
 npm run dev
 ```
 
@@ -80,6 +83,8 @@ Open http://localhost:5173. The API runs on port 8787, and Vite forwards `/api` 
 | - | - | - |
 | `SCRAPEBADGER_API_KEY` | yes | ScrapeBadger key, used to fetch posts |
 | `OPENROUTER_API_KEY` | yes | OpenRouter key, used to call Jev |
+| `ADMIN_PASSWORD` | for `/admin` | Turns on the admin. Use a long random one: `openssl rand -hex 16` |
+| `DATA_DIR` | no | Where the edited tree and run CSVs are kept (default `./data`) |
 | `PORT` | no | Port for `npm start` (default `8787`) |
 
 Set them in `.env` locally, which is gitignored, or as environment variables on your host.
@@ -91,6 +96,32 @@ Set them in `.env` locally, which is gitignored, or as environment variables on 
 3. **Timeframe.** Pick dates in UTC or a preset (24h, 7d, 30d, All). Leave it empty for the latest posts.
 4. Press **Run**. Posts pile up in the inbox, then travel the tree one at a time.
 5. Change the animation **speed** (1×, 3×, 10× or Skip). Click a leaf to filter the results table.
+6. When the run ends, press **Download CSV**.
+
+### Results as CSV
+
+Every run is saved on the server as `data/runs/<time>_<posts>_<accounts>.csv`, including runs you stop early. Download it from the results table, or find past runs in the admin. Columns:
+
+| Column | Example |
+| - | - |
+| `posted_at` | `2026-11-25T15:20:42.664Z` |
+| `platform`, `handle` | `truth`, `realDonaldTrump` |
+| `verdict` | `Political rumor` |
+| `p_<question key>` | `0.970` (one column per question) |
+| `text`, `url` | the post and a link to it |
+| `error` | why a post couldn't be classified, if it couldn't |
+
+The file is UTF-8 with a BOM, so Excel shows emoji and accents correctly. Post text that starts with `=`, `+`, `-` or `@` gets a leading `'`, so a spreadsheet can't run it as a formula.
+
+## Admin
+
+Set `ADMIN_PASSWORD`, restart, and open **`/admin`** (or click **Admin** at the top right of the app).
+
+- **Edit the tree.** Click any box in the live preview. For a question, change its text, Jev's instruction, the "yes when" and "no when" criteria, its threshold, where each branch leads and the label on each arrow. For an outcome, change its text and example. You can insert questions, add outcomes and delete either.
+- **Check it as you go.** A list under the preview names anything that would break the tree, such as a branch that leads nowhere or a box that isn't connected. Save stays off until the list is empty.
+- **Try a statement.** Run your draft, saved or not, on any statement. Its path lights up in the preview with Jev's answer at each question.
+- **Save.** The tree is stored in `data/tree.json`, and new runs use it straight away. **Reset to Figure 1** brings back the original tree (it isn't saved until you press Save).
+- **Runs.** Every saved CSV, newest first, with a download link.
 
 ### Cost
 
@@ -133,12 +164,26 @@ Example on [Render](https://render.com): **New → Web Service**, connect your f
 - **Start command:** `npm start`
 - **Environment:** `SCRAPEBADGER_API_KEY` and `OPENROUTER_API_KEY`
 
-Render sets `PORT` for you and picks the Node version from `engines` in `package.json`.
+Render sets `PORT` for you and picks the Node version from `engines` in `package.json`. Most hosts wipe the local disk on every deploy, so to keep the edited tree and the run CSVs, add a persistent disk and point `DATA_DIR` at it (on Render, **Disks → Add disk**, mount path `/var/data`, then `DATA_DIR=/var/data`).
 
 > [!WARNING]
-> There is no login and no rate limit. Anyone who can reach the app can start runs that spend your ScrapeBadger and OpenRouter credits.
+> Running posts needs no login and has no rate limit, so anyone who can reach the app can spend your ScrapeBadger and OpenRouter credits. Only the admin is behind a password.
+
+> [!IMPORTANT]
+> The admin password has no attempt limit, so make it long and random.
 
 ## API
+
+| Endpoint | Auth | Description |
+| - | - | - |
+| `GET /api/run` | none | Streams a run (below). |
+| `GET /api/config` | none | The current decision tree as JSON. |
+| `GET /api/runs/<file>.csv` | none | Downloads a saved run. |
+| `GET /api/admin/runs` | admin | Lists saved runs. |
+| `PUT /api/admin/tree` | admin | Validates and saves a tree. Returns `400` with `problems` if it's invalid. |
+| `POST /api/admin/test` | admin | `{ tree, statement }` → `{ answers, path }`, using the draft tree. |
+
+Admin endpoints need `Authorization: Bearer <ADMIN_PASSWORD>`. They answer `503` while `ADMIN_PASSWORD` is unset.
 
 `GET /api/run` streams a run as [server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events).
 
@@ -150,11 +195,12 @@ Render sets `PORT` for you and picks the Node version from `engines` in `package
 
 | Event | Data |
 | - | - |
+| `config` | The tree this run uses (later saves don't change it). |
 | `post` | `{ id, source, text, createdAt, url }` |
-| `verdict` | `{ id, answers: { political, falsifiable, settled, verified }, leaf }`, or `{ id, error }` |
+| `verdict` | `{ id, answers: { <question key>: p }, path: [keys from root to outcome], leaf }`, or `{ id, error }` |
 | `progress` | `{ source, n, pages, credits, done? }` |
 | `fail` | `{ source, message }` |
-| `end` | `{}` |
+| `end` | `{ csv }`: the saved CSV's file name, if the run had posts |
 
 ```sh
 curl -N 'http://localhost:8787/api/run?src=truth:realDonaldTrump&limit=5'
@@ -166,8 +212,7 @@ Closing the connection stops the scraping and classification for that run.
 
 - **No live fact-checking.** Jev answers from what it already knows. It can't verify or falsify claims newer than its training, so those land in *rumor* (71% of the run in the screenshot).
 - **It's one model's judgment.** For example, Jev files "Reagan talked to Iran in 1980" under *misinformation*, while the figure calls it a *rumor*.
-- **A fixed 0.5 cut-off** on every question.
-- **The verdict cache lives in memory** and is lost on restart.
+- **The verdict cache lives in memory** and is lost on restart. Saving a new tree starts it over.
 - **Truth Social's bot protection** sometimes blocks a scrape. Running it again usually works.
 
 ## Troubleshooting
@@ -179,19 +224,24 @@ Closing the connection stops the scraping and classification for that run.
 | `Truth Social blocked the scraper, try again` | Run it again. |
 | `Truth Social account not found` | Check the handle (no `@` needed). |
 | `No build found: run npm run build first` | Run `npm run build` before `npm start`. |
+| `The admin is off` | Add `ADMIN_PASSWORD` to `.env` (or your host's environment variables), then restart. |
 | Port 8787 is already in use | Run `PORT=9000 npm start`, or stop the other process (`npm run dev` needs 8787). |
 
 ## Project structure
 
 ```
 server/
-  index.ts     HTTP server: /api/run (SSE) and the built app
+  index.ts     HTTP server: the API, admin endpoints and the built app
   sources.ts   Truth Social and X fetchers (ScrapeBadger)
-  jev.ts       the four questions, Jev calls and the tree walk
+  jev.ts       Jev calls through OpenRouter
+  store.ts     data/tree.json and the run CSVs
   check.ts     self-checks (npm run check)
 src/
   App.tsx      controls, inbox and results table
+  Admin.tsx    the /admin editor
   Tree.tsx     the SVG tree and animated tokens
+  layout.ts    tree geometry for any tree shape
+  decision.ts  the default tree (Figure 1), the walk and validation
   types.ts     types shared by the server and the browser
 ```
 
@@ -200,7 +250,7 @@ src/
 Issues and pull requests are welcome. Before you open a PR, run:
 
 ```sh
-npm run check   # self-checks for the tree walk and HTML cleanup
+npm run check   # self-checks: tree walk, validation, layout, CSV, HTML cleanup
 npm run lint
 npm run build   # type-check and build
 ```

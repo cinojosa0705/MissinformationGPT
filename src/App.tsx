@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Tree, { LEAVES, QUESTIONS, asked, leafName } from './Tree'
-import type { Leaf, Post, Progress, Verdict } from './types'
+import Tree from './Tree'
+import { flat } from './decision'
+import { layout } from './layout'
+import type { Post, Progress, TreeConfig, Verdict } from './types'
 
 const PLATFORMS = { truth: 'Truth Social', x: 'X' } as const
 type Platform = keyof typeof PLATFORMS
@@ -11,9 +13,8 @@ const DAY = 86_400_000
 const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 const fmt = (p: number) => p.toFixed(2).replace(/^0/, '')
-const zero = () => Object.fromEntries(Object.keys(LEAVES).map((l) => [l, 0])) as Record<Leaf, number>
 
-function Source({ s, onRemove }: { s: string; onRemove?: () => void }) {
+export function Source({ s, onRemove }: { s: string; onRemove?: () => void }) {
   const [platform, handle] = s.split(':')
   return (
     <span className="chip">
@@ -35,6 +36,8 @@ export default function App() {
   const [since, setSince] = useState('')
   const [until, setUntil] = useState('')
   const [speed, setSpeed] = useState<number>(1)
+  const [tree, setTree] = useState<TreeConfig>()
+  const [csv, setCsv] = useState<string>()
 
   const [target, setTarget] = useState(0)
   const [posts, setPosts] = useState<Record<string, Post>>({})
@@ -45,7 +48,7 @@ export default function App() {
   const [flying, setFlying] = useState<string[]>([])
   const [arrived, setArrived] = useState<string[]>([])
   const [current, setCurrent] = useState<string>()
-  const [selected, setSelected] = useState<Leaf>()
+  const [selected, setSelected] = useState<string>()
   const queue = useRef<string[]>([]) // classified, waiting to be launched into the tree
   const es = useRef<EventSource | null>(null)
   const speedRef = useRef(speed)
@@ -63,6 +66,11 @@ export default function App() {
   }, [speed])
 
   useEffect(() => () => es.current?.close(), [])
+  useEffect(() => {
+    fetch('/api/config')
+      .then((r) => r.json())
+      .then(setTree, () => setFails([{ source: '', message: "Couldn't load the decision tree from the server" }]))
+  }, [])
 
   const arrive = useCallback((id: string) => {
     setFlying((f) => f.filter((x) => x !== id))
@@ -85,6 +93,7 @@ export default function App() {
     setArrived([])
     setCurrent(undefined)
     setSelected(undefined)
+    setCsv(undefined)
     queue.current = []
     setTarget(sources.length * limit)
 
@@ -96,6 +105,7 @@ export default function App() {
     es.current = source
     setRunning(true)
     const on = <T,>(name: string, fn: (d: T) => void) => source.addEventListener(name, (e) => fn(JSON.parse((e as MessageEvent).data)))
+    on<TreeConfig>('config', setTree) // the tree this run uses, even if the admin saves a new one mid-run
     on<Post>('post', (p) => setPosts((m) => ({ ...m, [p.id]: p })))
     on<Progress>('progress', (p) => setProgress((m) => ({ ...m, [p.source]: p })))
     on<{ source: string; message: string }>('fail', (f) => setFails((l) => [...l, f]))
@@ -105,7 +115,10 @@ export default function App() {
       if (speedRef.current) queue.current.push(v.id)
       else setArrived((a) => [...a, v.id])
     })
-    on('end', stop)
+    on<{ csv?: string }>('end', (d) => {
+      setCsv(d.csv)
+      stop()
+    })
     source.onerror = () => {
       if (es.current !== source) return
       setFails((l) => [...l, { source: '', message: 'Lost the connection to the server' }])
@@ -130,10 +143,13 @@ export default function App() {
   }
 
   const counts = useMemo(() => {
-    const c = zero()
-    for (const id of arrived) c[verdicts[id].leaf!]++
+    const c: Record<string, number> = Object.fromEntries((tree?.leaves ?? []).map((l) => [l.id, 0]))
+    for (const id of arrived) c[verdicts[id].leaf!] = (c[verdicts[id].leaf!] ?? 0) + 1
     return c
-  }, [arrived, verdicts])
+  }, [arrived, verdicts, tree])
+  const names = useMemo(() => new Map([...(tree?.questions ?? []), ...(tree?.leaves ?? [])].map((n) => [n.id, flat(n.label)])), [tree])
+  const corner = useMemo(() => !tree || layout(tree).corner, [tree])
+  const leafName = (id: string) => names.get(id) ?? id
 
   const rows = useMemo(() => {
     const failed = Object.values(verdicts).filter((v) => v.error).map((v) => v.id)
@@ -148,16 +164,22 @@ export default function App() {
   const judged = Object.keys(verdicts).length
   const fetching = running && Object.values(progress).filter((p) => p.done).length < target / limit
   const credits = Object.values(progress).reduce((a, p) => a + p.credits, 0)
-  const now = current && verdicts[current]?.leaf ? { id: current, leaf: verdicts[current].leaf!, answers: verdicts[current].answers! } : undefined
+  const cv = current ? verdicts[current] : undefined
+  const now = cv?.leaf ? { id: cv.id, leaf: cv.leaf, path: cv.path!, answers: cv.answers! } : undefined
   const nowPost = now && posts[now.id]
 
   return (
     <>
-      <header>
-        <h1>MissinformationGPT</h1>
-        <p className="sub">
-          Each post walks the decision tree from <i>Figure 1</i>, “Decision tree for conceptual scheme”. Jev answers every question.
-        </p>
+      <header className="top">
+        <div>
+          <h1>MissinformationGPT</h1>
+          <p className="sub">
+            Each post walks a decision tree and Jev answers every question. The default tree is <i>Figure 1</i>, “Decision tree for conceptual scheme”.
+          </p>
+        </div>
+        <a className="nav" href="/admin">
+          Admin <span aria-hidden>→</span>
+        </a>
       </header>
 
       <section className="controls" aria-label="Run settings">
@@ -274,7 +296,7 @@ export default function App() {
 
         <section className="board" aria-label="Decision tree">
           <div className="board-head">
-            <span className="label">Figure 1 · live</span>
+            <span className="label">Decision tree · live</span>
             <span className="muted mono">
               {queue.current.length} waiting · {flying.length} in the tree · {arrived.length} sorted
             </span>
@@ -287,17 +309,22 @@ export default function App() {
             </div>
           </div>
           <div className="tree-wrap">
-            <Tree
-              flying={flying.map((id) => ({ id, leaf: verdicts[id].leaf! }))}
-              current={now}
-              counts={counts}
-              speed={speed || 1}
-              selected={selected}
-              onSelect={setSelected}
-              onArrive={arrive}
-            />
+            {tree ? (
+              <Tree
+                tree={tree}
+                flying={flying.map((id) => ({ id, path: verdicts[id].path! }))}
+                current={now}
+                counts={counts}
+                speed={speed || 1}
+                selected={selected}
+                onSelect={(l) => setSelected((s) => (s === l ? undefined : l))}
+                onArrive={arrive}
+              />
+            ) : (
+              <div className="tree-loading muted">Loading the tree…</div>
+            )}
             {now && nowPost && (
-              <div className="now" key={now.id}>
+              <div className={corner ? 'now' : 'now inline'} key={now.id}>
                 <div className="meta">
                   <span className="label">Now evaluating</span>
                   <span className="mono">
@@ -306,9 +333,9 @@ export default function App() {
                 </div>
                 <p>{nowPost.text}</p>
                 <div className="answers">
-                  {QUESTIONS.map(([, k, label], i) => (
-                    <span key={k} className={i < asked(now.answers) ? '' : 'skip'}>
-                      {label} <b>{fmt(now.answers[k])}</b>
+                  {tree?.questions.map((q) => (
+                    <span key={q.id} className={now.path.includes(q.id) ? '' : 'skip'}>
+                      {flat(q.label)} <b>{fmt(now.answers[q.id] ?? 0)}</b>
                     </span>
                   ))}
                 </div>
@@ -317,8 +344,9 @@ export default function App() {
             )}
           </div>
           <p className="muted note">
-            Jev (<span className="mono">typesafe/jev-1.13</span> on OpenRouter) answers all four questions in one call per post, from its own knowledge with no
-            live fact-check, so very recent claims tend to land in <i>rumor</i>. A node says yes when p ≥ .50. Click a leaf to filter.
+            Jev (<span className="mono">typesafe/jev-1.13</span> on OpenRouter) answers all {tree?.questions.length ?? ''} questions in one call per post, from
+            its own knowledge with no live fact-check, so very recent claims tend to land in <i>rumor</i>. A question says yes when p reaches its threshold
+            (.50 unless changed in the admin). Click a leaf to filter.
           </p>
         </section>
       </main>
@@ -332,6 +360,12 @@ export default function App() {
             </button>
           )}
           <span className="muted mono">{rows.length} posts</span>
+          {csv && (
+            <a className="button" href={`/api/runs/${encodeURIComponent(csv)}`} download>
+              Download CSV
+            </a>
+          )}
+          {running && <span className="muted">The CSV is saved when the run ends.</span>}
         </div>
         {rows.length > 0 && (
           <div className="table-wrap">
@@ -342,7 +376,7 @@ export default function App() {
                   <th>Posted</th>
                   <th>Account</th>
                   <th>Post</th>
-                  <th title="p(yes): political, falsifiable, verified-or-falsified, verified">P · F · E · V</th>
+                  <th title={`p(yes): ${tree?.questions.map((q) => q.id).join(', ')}`}>{tree?.questions.map((q) => q.id[0].toUpperCase()).join(' · ')}</th>
                   <th />
                 </tr>
               </thead>
@@ -355,7 +389,7 @@ export default function App() {
                       <Source s={post.source} />
                     </td>
                     <td className="text">{post.text}</td>
-                    <td className="mono nowrap">{v.answers ? QUESTIONS.map(([, k]) => fmt(v.answers![k])).join(' ') : '—'}</td>
+                    <td className="mono nowrap">{v.answers ? tree?.questions.map((q) => fmt(v.answers![q.id] ?? 0)).join(' ') : '—'}</td>
                     <td>
                       <a href={post.url} target="_blank" rel="noreferrer" aria-label="Open original post">
                         ↗

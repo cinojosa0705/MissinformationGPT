@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 
 .env
+
+# Saved tree and run CSVs
+data
